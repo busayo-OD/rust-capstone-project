@@ -78,7 +78,7 @@ fn main() -> bitcoincore_rpc::Result<()> {
 
     // Get blockchain info
     let blockchain_info = rpc.get_blockchain_info()?;
-    println!("Blockchain Info: {:?}", blockchain_info);
+    println!("Blockchain Info: {blockchain_info:?}");
 
     // Create/Load the wallets, named 'Miner' and 'Trader'. Have logic to optionally create/load them if they do not exist or not loaded already.
     println!("Creating wallets...");
@@ -87,7 +87,7 @@ fn main() -> bitcoincore_rpc::Result<()> {
     // Generate address for Miner wallet
     println!("Generating miner address...");
     let miner_address = generate_miner_address(&rpc)?;
-    println!("Miner address: {}", miner_address);
+    println!("Miner address: {miner_address}");
 
     // Parse the miner address string; not yet tied to any specific network
     let parsed_address: Address<NetworkUnchecked> =
@@ -99,44 +99,43 @@ fn main() -> bitcoincore_rpc::Result<()> {
         .expect("Address is not valid for regtest");
 
     // Generate spendable balances in the Miner wallet. How many blocks needs to be mined?
-    // Mine until coinbase maturity (100 confirmations) gives spendable funds
+    // Wallet balance for block rewards doesn’t update immediately because coinbase
+    // transactions must mature (100 confirmations) before they are spendable, so additional blocks are mined until the rewards become spendable.
+
     println!("Mining blocks until Miner has spendable balance...");
     let blocks_mined = mine_until_balance(&rpc, &miner_address)?;
-    println!("Mined {} blocks to get positive balance", blocks_mined);
+    println!("Mined {blocks_mined} blocks to get positive balance");
 
     // Print Miner wallet balance
     let miner_rpc = get_wallet_client(MINER_WALLET)?;
     let balance = miner_rpc.get_balance(None, None)?;
     println!("Miner wallet balance: {} BTC", balance.to_btc());
 
-    // Explain coinbase maturity
-    // Coinbase transactions require 100 confirmations before funds are spendable.
-    // We mine enough blocks to surpass this maturity, ensuring Miner can spend rewards.
-
     // Load Trader wallet and generate a new address
     println!("Generating Trader address...");
     let trader_address = generate_trader_address(&rpc)?;
-    println!("Trader address: {}", trader_address);
+    println!("Trader address: {trader_address}");
 
     // Send 20 BTC from Miner to Trader
     println!("Sending 20 BTC from Miner to Trader...");
     let miner_rpc = get_wallet_client(MINER_WALLET)?;
     let amount = Amount::from_btc(20.0)?;
     let txid = send(&miner_rpc, &trader_address, amount)?;
-    println!("20 BTC sent to Trader, txid: {}", txid);
+    println!("20 BTC sent to Trader, txid: {txid}");
 
     // Check transaction in mempool
     let txid_parsed: Txid = txid.parse().expect("Invalid txid");
 
-// Check transaction in mempool
-let mempool_entry = rpc.get_mempool_entry(&txid_parsed)
-    .expect("Failed to get mempool entry");
+    // Check transaction in mempool
+    let mempool_entry = rpc
+        .get_mempool_entry(&txid_parsed)
+        .expect("Failed to get mempool entry");
 
-println!("Transaction in Mempool: {:?}", mempool_entry);
+    println!("Transaction in Mempool: {mempool_entry:?}");
     // Mine 1 block to confirm the transaction
     println!("Mining block to confirm transaction...");
     let block_hashes = rpc.generate_to_address(1, &miner_address)?;
-    println!("Mined block: {:?}", block_hashes);
+    println!("Mined block: {block_hashes:?}");
     let block_hash = &block_hashes[0];
 
     // Get current block height
@@ -168,7 +167,7 @@ fn extract_transaction_details(
     let tx_result = rpc.get_raw_transaction(&txid_hash, None)?;
     let tx = tx_result;
 
-    // Get transaction details with verbose info
+    // Get transaction details
     let tx_details = rpc.get_raw_transaction_info(&txid_hash, None)?;
 
     // Extract miner input details (from the spent UTXO)
@@ -178,7 +177,7 @@ fn extract_transaction_details(
     let (trader_output_address, trader_output_amount) = get_trader_output(&tx, trader_address)?;
 
     // Extract miner change output
-    let (miner_change_address, miner_change_amount) = get_miner_change(&tx, &trader_address)?;
+    let (miner_change_address, miner_change_amount) = get_miner_change(&tx, trader_address)?;
 
     // Calculate transaction fee (inputs - outputs)
     let miner_input_sats = (miner_input_amount * 100_000_000.0).round() as u64;
@@ -249,10 +248,7 @@ fn get_miner_input(
         .vout
         .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "No vout in input"))?;
     let prev_output = prev_tx.output.get(vout as usize).ok_or_else(|| {
-        IoError::new(
-            ErrorKind::InvalidData,
-            format!("Invalid vout index {}", vout),
-        )
+        IoError::new(ErrorKind::InvalidData, format!("Invalid vout index {vout}"))
     })?;
 
     // Get the address from output script
@@ -271,18 +267,18 @@ fn get_miner_input(
 // Mine until wallet has matured coinbase funds (100 blocks)
 fn mine_until_balance(rpc: &Client, miner_address: &Address) -> bitcoincore_rpc::Result<u64> {
     let miner_rpc = get_wallet_client(MINER_WALLET)?;
-    
+
     // Mine 101 blocks to ensure coinbase maturity
     println!("Mining 101 blocks to ensure coinbase maturity...");
     rpc.generate_to_address(101, miner_address)?;
-    
+
     let balance = miner_rpc.get_balance(None, None)?;
     println!("Miner balance after mining: {} BTC", balance.to_btc());
-    
-    Ok(101) // Return number of blocks mined
+
+    Ok(101)
 }
 
-// Locate trader's output in transaction
+// Get trader's output in transaction
 fn get_trader_output(
     tx: &Transaction,
     trader_address: &str,
@@ -297,8 +293,11 @@ fn get_trader_output(
     Err(IoError::new(ErrorKind::InvalidData, "Trader output not found").into())
 }
 
-// Locate miner's change output
-fn get_miner_change(tx: &Transaction, trader_address: &str) -> bitcoincore_rpc::Result<(String, f64)> {
+// Get miner's change output
+fn get_miner_change(
+    tx: &Transaction,
+    trader_address: &str,
+) -> bitcoincore_rpc::Result<(String, f64)> {
     for output in &tx.output {
         if let Ok(address) = Address::from_script(&output.script_pubkey, Network::Regtest) {
             if address.to_string() != trader_address {
@@ -318,16 +317,16 @@ fn create_or_load_wallets(rpc: &Client) -> bitcoincore_rpc::Result<()> {
 
 fn create_or_load_wallet(rpc: &Client, wallet_name: &str) -> bitcoincore_rpc::Result<()> {
     match rpc.create_wallet(wallet_name, None, None, None, None) {
-        Ok(_) => println!("{} wallet created successfully", wallet_name),
+        Ok(_) => println!("{wallet_name} wallet created successfully"),
         Err(e) => {
             if e.to_string().contains("Already exist") {
-                println!("{} wallet already exists, loading it", wallet_name);
+                println!("{wallet_name} wallet already exists, loading it");
             }
             match rpc.load_wallet(wallet_name) {
-                Ok(_) => println!("{} wallet loaded successfully", wallet_name),
+                Ok(_) => println!("{wallet_name} wallet loaded successfully"),
                 Err(e) => {
                     if e.to_string().contains("already loaded") {
-                        println!("{} wallet already loaded", wallet_name)
+                        println!("{wallet_name} wallet already loaded")
                     } else {
                         return Err(e);
                     }
@@ -341,7 +340,7 @@ fn create_or_load_wallet(rpc: &Client, wallet_name: &str) -> bitcoincore_rpc::Re
 // Return RPC client for a specific wallet
 fn get_wallet_client(wallet_name: &str) -> bitcoincore_rpc::Result<Client> {
     Client::new(
-        &format!("{}/wallet/{}", RPC_URL, wallet_name),
+        &format!("{RPC_URL}/wallet/{wallet_name}"),
         Auth::UserPass(RPC_USER.to_owned(), RPC_PASS.to_owned()),
     )
 }
